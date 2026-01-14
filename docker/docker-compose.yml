@@ -1,0 +1,76 @@
+services:
+  ingest:
+    image: movie-spark-pipeline
+    container_name: spark-ingest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+    - PYTHONPATH=/opt/app
+
+    volumes:
+      - ../data:/opt/app/data
+      - ../ingestion:/opt/app/ingestion
+      - ../src:/opt/app/src
+    command: >
+      /opt/spark/bin/spark-submit
+      --master local[*]
+      /opt/app/ingestion/fetch_movies.py
+
+  transform:
+    image: movie-spark-pipeline
+    container_name: spark-transform
+    depends_on:
+      - ingest
+    env_file:
+      - ../.env
+    environment:
+    - PYTHONPATH=/opt/app
+
+    volumes:
+      - ../data:/opt/app/data
+      - ../transform:/opt/app/transform
+      - ../src:/opt/app/src
+    command: >
+      /opt/spark/bin/spark-submit
+      --master local[*]
+      /opt/app/transform/clean_transform.py
+
+  kpi:
+    image: movie-spark-pipeline
+    container_name: spark-kpi
+    depends_on:
+      - transform
+    env_file:
+      - ../.env
+    environment:
+    - PYTHONPATH=/opt/app
+
+    volumes:
+      - ../data:/opt/app/data
+      - ../analytics:/opt/app/analytics
+      - ../src:/opt/app/src
+    command: >
+      /opt/spark/bin/spark-submit
+      --master local[*]
+      /opt/app/analytics/kpis.py
+
+  visualization:
+    image: movie-spark-pipeline
+    container_name: spark-visualization
+    depends_on:
+      - kpi
+    env_file:
+      - ../.env
+    environment:
+    - PYTHONPATH=/opt/app
+
+    volumes:
+      - ../data:/opt/app/data
+      - ../src:/opt/app/src
+    command: >
+      /opt/spark/bin/spark-submit
+      --master local[*]
+      /opt/app/visualization/visualize.py

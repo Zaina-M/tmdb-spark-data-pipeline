@@ -1,0 +1,25 @@
+
+
+# Data handling
+pandas
+numpy
+
+
+# Environment variables
+python-dotenv
+
+# Logging (optional if using custom logger)
+loguru==0.7.0
+
+# Visualization (for later analysis)
+matplotlib
+seaborn
+
+# Database drivers (optional, if writing GOLD to Postgres/MySQL)
+sqlalchemy==2.0.19
+psycopg2-binary==2.9.8
+
+# Utilities
+requests==2.31.0   # For API fetching if needed
+pyarrow     # For Parquet file handling
+pyspark
