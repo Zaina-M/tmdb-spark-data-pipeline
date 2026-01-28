@@ -20,7 +20,7 @@ COPY ./requirements.txt .
 
 USER root
 
-RUN pip install --no-cache-dir -r requirements.txt jupyter jupyterlab ipywidgets
+RUN pip install --no-cache-dir -r requirements.txt
 
 WORKDIR /opt/app
 

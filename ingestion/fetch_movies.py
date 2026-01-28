@@ -98,67 +98,6 @@ def is_valid_movie(payload: dict) -> bool:
     
     return True
 
-def fetch_movie_with_retries(
-    movie_id: int,
-    max_retries: int = 3,
-    backoff: int = 2
-):
-    # Fetch a movie from TMDB 
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            response = requests.get(
-                f"{BASE_URL}/{movie_id}",
-                params={
-                    "api_key": API_KEY,
-                    "append_to_response": "credits"
-                },
-                timeout=10
-            )
-
-            # Success
-            if response.status_code == 200:
-                return response.json()
-
-            # Rate limiting (TMDB)
-            if response.status_code == 429:
-                retry_after = int(
-                    response.headers.get("Retry-After", backoff ** attempt)
-                )
-                logger.warning(
-                    f"Rate limited (429) for movie {movie_id}. "
-                    f"Sleeping {retry_after}s before retry"
-                )
-                time.sleep(retry_after)
-                continue
-
-            # Permanent failures → do NOT retry
-            if response.status_code in (401, 403, 404):
-                logger.warning(
-                    f"Rejected movie ID {movie_id} | HTTP {response.status_code}"
-                )
-                return None
-
-            # Other retryable failures
-            logger.warning(
-                f"Attempt {attempt}/{max_retries} failed "
-                f"for movie {movie_id} | HTTP {response.status_code}"
-            )
-
-        except RequestException as e:
-            logger.warning(
-                f"Attempt {attempt}/{max_retries} failed "
-                f"for movie {movie_id} | {e}"
-            )
-
-        # Exponential backoff
-        if attempt < max_retries:
-            time.sleep(backoff ** attempt)
-
-    logger.error(f"Movie ID {movie_id} failed after {max_retries} retries")
-    return None
-
-
 # Fetch Movies (with Credits - Concurrent)
 
 class ConcurrentMovieIngestion:
@@ -171,7 +110,7 @@ class ConcurrentMovieIngestion:
         self.session = requests.Session()
         # Configure session with connection pooling
         adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
-        self.session.mount('http://', adapter)
+        self.session.mount('http://', adapter) # Apply this adapter to all HTTPS requests
         self.session.mount('https://', adapter)
     
     def fetch_single_movie(self, movie_id: int, max_retries: int = 3, backoff: int = 2) -> dict:
@@ -186,6 +125,7 @@ class ConcurrentMovieIngestion:
                     },
                     timeout=10
                 )
+
                 
                 # Success
                 if response.status_code == 200:
@@ -361,7 +301,9 @@ if __name__ == "__main__":
 
     logger.info(f"Rejected IDs written to {REJECTED_IDS_PATH}")
 
-    df_raw.write.mode("overwrite").parquet(BRONZE_PARQUET_PATH)
+    # Append mode ensures Bronze layer is immutable (no accidental overwrites)
+    # Each run writes to a unique timestamped path anyway, but append is safer
+    df_raw.write.mode("append").parquet(BRONZE_PARQUET_PATH)
 
     logger.info(f"Bronze Parquet written to {BRONZE_PARQUET_PATH}")
     logger.info(f"Schema validation:  Passed" if MovieSchema.validate_schema(df_raw, MovieSchema.BRONZE_SCHEMA) else "  Schema mismatch")

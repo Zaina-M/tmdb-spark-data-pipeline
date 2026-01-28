@@ -171,6 +171,23 @@ class MovieSchema:
     ])
     
     
+    # Numeric columns that need type casting (extracted from BRONZE_SCHEMA)
+    # Maps column name -> target type for Silver layer
+    NUMERIC_CAST_MAP = {
+        "budget": DoubleType(),
+        "revenue": DoubleType(),
+        "popularity": DoubleType(),
+        "vote_count": IntegerType(),
+        "vote_average": DoubleType(),
+        "runtime": IntegerType(),
+        "id": IntegerType()
+    }
+    
+    @staticmethod
+    def get_numeric_columns() -> dict:
+        """Returns the numeric columns and their target types for transformation."""
+        return MovieSchema.NUMERIC_CAST_MAP
+    
     @staticmethod
     def validate_schema(df, expected_schema: StructType) -> bool:
         

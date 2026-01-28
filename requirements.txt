@@ -24,3 +24,7 @@ pyspark
 # Testing
 pytest
 pytest-cov
+
+jupyter
+jupyterlab
+ipywidgets

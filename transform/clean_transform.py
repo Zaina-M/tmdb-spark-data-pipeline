@@ -4,8 +4,8 @@ from pyspark.sql.functions import (
     col, when, size, explode, concat_ws,
     to_date, year, array, lit, filter, transform
 )
-from pyspark.sql.types import DoubleType, IntegerType
 from src.utils.logger import get_logger
+from src.schemas import MovieSchema
 
 logger = get_logger(__name__)
 
@@ -84,17 +84,8 @@ def main():
     )
 
     
-    # 6. Type casting
-    
-    numeric_cols = {
-        "budget": DoubleType(),
-        "revenue": DoubleType(),
-        "popularity": DoubleType(),
-        "vote_count": IntegerType(),
-        "vote_average": DoubleType(),
-        "runtime": IntegerType(),
-        "id": IntegerType()
-    }
+    # 6. Type casting (using schema-defined types)
+    numeric_cols = MovieSchema.get_numeric_columns()
 
     for col_name, dtype in numeric_cols.items():
         if col_name in df.columns:
