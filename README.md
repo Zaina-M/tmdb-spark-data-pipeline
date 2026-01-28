@@ -1,132 +1,258 @@
 # Movie Data Pipeline
 
-A robust end-to-end data pipeline that fetches movie data from the TMDB API, processes it through a multi-hop architecture (Bronze $\rightarrow$ Silver $\rightarrow$ Gold), calculates key business metrics, and generates visualizations.
+A production ready, end-to-end data pipeline that fetches movie data from the TMDB API, processes it through a multi-hop Medallion Architecture (Bronze → Silver → Gold), calculates key business metrics, generates visualizations, and includes comprehensive testing.
 
-## Architecture
+##  Architecture
 
-The pipeline follows the Medallion Architecture pattern:
+The pipeline follows the **Medallion Architecture** pattern with full containerization:
 
-1.  **Bronze Layer (Ingestion)**: Raw JSON/Parquet data fetched from the TMDB API.
-2.  **Silver Layer (Transformation)**: Cleaned, de-duplicated, and schema-enforced data (flattened structures, type casting).
-3.  **Gold Layer (Analytics)**: Aggregated Key Performance Indicators (KPIs) ready for reporting.
-4.  **Visualization**: Charts and graphs generated from Gold data.
-
-```mermaid
-graph LR
-    A[TMDB API] -->|Extract| B(Bronze Layer\nRaw Data)
-    B -->|Clean & Transform| C(Silver Layer\nCurated Data)
-    C -->|Aggregate| D(Gold Layer\nKPIs)
-    D -->|Plot| E(Visualizations\n.png files)
-    D -->|Verify| F(Jupyter Notebook)
 ```
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                              MOVIE DATA PIPELINE                                     │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                      │
+│   ┌──────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐       │
+│   │  TMDB    │     │    BRONZE    │     │    SILVER    │     │     GOLD     │       │
+│   │   API    │────▶│  Raw JSON/   │────▶│   Cleaned    │────▶│     KPIs     │       │
+│   │          │     │   Parquet    │     │   Curated    │     │   Metrics    │       │
+│   └──────────┘     └──────────────┘     └──────────────┘     └──────────────┘       │
+│        │                  │                    │                    │               │
+│        │                  │                    │                    │               │
+│        ▼                  ▼                    ▼                    ▼               │
+│   ┌──────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐       │
+│   │  Config  │     │  Audit Cols  │     │   Schema     │     │Visualizations│       │
+│   │  (YAML)  │     │  (timestamp) │     │  Validation  │     │    (.png)    │       │
+│   └──────────┘     └──────────────┘     └──────────────┘     └──────────────┘       │
+│                                                                                      │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│                              DOCKER SERVICES                                         │
+│   ┌─────────┐ ┌───────────┐ ┌─────┐ ┌─────────────┐ ┌──────────┐ ┌───────┐          │
+│   │ ingest  │ │ transform │ │ kpi │ │visualization│ │ notebook │ │ tests │          │
+│   └─────────┘ └───────────┘ └─────┘ └─────────────┘ └──────────┘ └───────┘          │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow
+
+| Layer | Purpose | Format | Key Features |
+|-------|---------|--------|--------------|
+| **Bronze** | Raw ingestion | JSON + Parquet | Partitioned by date, timestamped runs, audit columns |
+| **Silver** | Cleaned & curated | Parquet | Flattened JSON, type casting, profit/ROI calculation |
+| **Gold** | Business metrics | Parquet | Pre-aggregated KPIs, search queries |
+| **Viz** | Reporting | PNG images | Charts and graphs for stakeholders |
 
 ##  Project Structure
 
 ```text
 movie-data-pipeline/
+├── config/
+│   └── config.yaml              # Centralized configuration (movie IDs, paths, thresholds)
 ├── ingestion/
-│   └── fetch_movies.py       # Step 1: Fetches data from API -> Bronze
+│   └── fetch_movies.py          # Step 1: API → Bronze (with retry logic & concurrency)
 ├── transform/
-│   └── clean_transform.py    # Step 2: Cleans data -> Silver
+│   └── clean_transform.py       # Step 2: Bronze → Silver (cleaning & enrichment)
 ├── analytics/
-│   └── kpis.py               # Step 3: Calculates metrics -> Gold
+│   └── kpis.py                  # Step 3: Silver → Gold (KPI calculations)
 ├── visualization/
-│   └── visualize.py          # Step 4: Generates charts -> data/visualizations
+│   └── visualize.py             # Step 4: Gold → PNG charts
+├── src/
+│   ├── schemas.py               # PySpark schema definitions
+│   └── utils/
+│       ├── config.py            # Configuration loader utility
+│       └── logger.py            # Centralized logging
+├── tests/
+│   ├── test_ingestion.py        # Unit tests for API fetching & validation
+│   ├── test_transform.py        # Unit tests for data transformation
+│   └── test_kpis.py             # Unit tests for KPI calculations
 ├── notebooks/
-│   └── pipeline_verification.ipynb # Verification & Data Inspection
-├── data/                     # Data storage (created automatically)
-│   ├── bronze/
-│   ├── silver/
-│   ├── gold/
-│   └── visualizations/
-├── .env                      # API Credentials
-├── requirements.txt          # Python dependencies
-└── README.md                 # This documentation
+│   └── pipeline_verification.ipynb  # Interactive data inspection
+├── docker/
+│   ├── Dockerfile               # Spark + Jupyter image
+│   └── docker-compose.yml       # Service orchestration
+├── data/                        # Data storage (created automatically)
+│   ├── bronze/                  # Raw data (partitioned by ingestion_date)
+│   ├── silver/                  # Curated data
+│   ├── gold/                    # KPI outputs
+│   └── visualizations/          # Generated charts
+├── .env                         # API credentials (not in git)
+├── requirements.txt             # Python dependencies
+└── README.md                    # This documentation
 ```
 
-## Getting Started
+##  Getting Started
 
 ### Prerequisites
 
-- **Python 3.8+**
-- **Java (JDK 8 or 11)**: Required for PySpark.
-- **TMDB API Key**: Get one [here](https://www.themoviedb.org/documentation/api).
+- **Docker & Docker Compose** (recommended)
+- **TMDB API Key**: Get one [here](https://www.themoviedb.org/documentation/api)
 
 ### 1. Environment Setup
 
-1.  Clone the repository.
-2.  Create a `.env` file in the root directory:
-    ```env
-    TMDB_API_KEY=your_actual_api_key_here
-    ```
-3.  Install dependencies:
-    ```bash
-    pip install -r requirements.txt
-    pip install pyspark # If not already installed
-    ```
-
-## How to Run the Pipeline
-
-Follow these steps in order to populate the data layers.
-
-### Step 1: Ingestion (Bronze)
-
-Fetches movies (e.g., top 500 revenue, popular) and saves them as raw Parquet files.
-
 ```bash
-python ingestion/fetch_movies.py
+# Clone the repository
+git clone <repo-url>
+cd movie-data-pipeline
+
+# Create .env file with your API key
+echo "TMDB_API_KEY=your_actual_api_key_here" > .env
 ```
 
-_Output: `data/bronze/movies/ingestion_date=.../movies_raw.parquet`_
+### 2. Configure Movie IDs (Optional)
 
-### Step 2: Transformation (Silver)
+Edit `config/config.yaml` to customize which movies to fetch:
 
-Cleans the raw data (explodes genres, handles nulls, calculates profit).
-
-```bash
-python transform/clean_transform.py
+```yaml
+ingestion:
+  movie_ids:
+    - 299534   
+    - 19995    
+    - 550      
+    # Add more IDs here...
 ```
 
-_Output: `data/silver/movies_curated/`_
+##  Running with Docker (Recommended)
 
-### Step 3: Analytics (Gold)
-
-Calculates KPIs like Highest ROI, Top Genres, and Franchise Performance.
+### Run the Full Pipeline
 
 ```bash
-python analytics/kpis.py
+cd docker
+docker-compose up --build
 ```
 
-_Output: `data/gold/highest_revenue/`, `data/gold/franchise_vs_standalone/`, etc._
+This runs all stages in sequence: `ingest` → `transform` → `kpi` → `visualization`
 
-### Step 4: Visualization
-
-Generates profit charts, correlation heatmaps, and trend lines.
+### Run Individual Stages
 
 ```bash
-python visualization/visualize.py
+# Ingestion only
+docker-compose run ingest
+
+# Transformation only
+docker-compose run transform
+
+# KPIs only
+docker-compose run kpi
+
+# Visualizations only
+docker-compose run visualization
+
+# Run tests
+docker-compose run tests
 ```
 
-_Output: PNG files in `data/visualizations/`_
+### Interactive Notebook
 
-## Verification
+```bash
+docker-compose up notebook
+```
 
-We have provided a Jupyter Notebook to interactively verify the results and inspect the data at every stage.
+Then open `http://localhost:8888` in your browser.
 
-1.  Open the notebook:
-    ```bash
-    jupyter notebook notebooks/pipeline_verification.ipynb
-    ```
-2.  Run the cells to see:
-    - Raw data samples.
-    - Cleaned dataframe schemas.
-    - Specific KPI values (e.g., `get_kpi("highest_profit")`).
-    - Embedded visualization images.
+##  Testing
+
+The project includes comprehensive unit tests using pytest:
+
+```bash
+# Run all tests
+docker-compose run tests
+
+# Run specific test file
+docker-compose run tests pytest /opt/app/tests/test_ingestion.py -v
+
+# Run with coverage
+docker-compose run tests pytest /opt/app/tests --cov=src --cov=ingestion
+```
+
+### Test Coverage
+
+| Module | Tests |
+|--------|-------|
+| `ingestion` | Movie validation, API retry logic, config loading |
+| `transform` | Status filtering, genre flattening, ROI calculation |
+| `kpis` | Profit calculation, ranking, franchise analysis |
 
 ##  Data Layers Detail
 
-| Layer      | Description                                                                               | Path          |
-| :--------- | :---------------------------------------------------------------------------------------- | :------------ |
-| **Bronze** | Raw data from TMDB. Contains nested JSON strings and original schemas.                    | `data/bronze` |
-| **Silver** | Curated table. Revenue/Budget converted to millions (musd), dates parsed, JSON flattened. | `data/silver` |
-| **Gold**   | Aggregated business metrics. E.g., "Mean Revenue by Year", "Top 10 High ROI Movies".      | `data/gold`   |
+### Bronze Layer (Raw)
+- **Path**: `data/bronze/movies/ingestion_date=YYYY-MM-DD/`
+- **Format**: JSON + Parquet
+- **Features**:
+  - Partitioned by ingestion date
+  - Timestamped filenames for multiple daily runs (e.g., `movies_raw_143025.json`)
+  - Audit columns: `ingestion_timestamp`, `run_id`
+
+### Silver Layer (Curated)
+- **Path**: `data/silver/movies_curated/`
+- **Format**: Parquet
+- **Transformations**:
+  - Budget/Revenue converted to millions (USD)
+  - Genres flattened to pipe-separated strings
+  - Cast/Director extracted from credits
+  - ROI and Profit calculated
+
+### Gold Layer (Analytics)
+- **Path**: `data/gold/<kpi_name>/`
+- **Available KPIs**:
+  - `highest_revenue`, `highest_budget`, `highest_profit`
+  - `highest_roi`, `lowest_roi` (with budget threshold)
+  - `highest_rated`, `lowest_rated`, `most_popular`
+  - `top_directors`, `top_franchises`
+  - `franchise_vs_standalone`
+
+##  Visualizations
+
+Generated charts in `data/visualizations/`:
+
+| Chart | Description |
+|-------|-------------|
+| `revenue_vs_budget.png` | Scatter plot of movie financials |
+| `roi_by_genre_bar.png` | Average ROI by genre |
+| `popularity_vs_rating.png` | Correlation analysis |
+| `yearly_trends.png` | Revenue trends over time |
+| `franchise_vs_standalone_*.png` | Comparison charts |
+
+##  Configuration
+
+All pipeline settings are centralized in `config/config.yaml`:
+
+```yaml
+# API settings
+api:
+  max_retries: 3
+  timeout_seconds: 10
+
+# Which movies to fetch
+ingestion:
+  movie_ids: [299534, 19995, 140607, ...]
+
+# Data paths
+paths:
+  bronze: "data/bronze/movies"
+  silver: "data/silver/movies_curated"
+  gold: "data/gold"
+
+# Thresholds
+transformation:
+  min_budget_for_roi: 10  # millions USD
+  min_votes_for_rating: 10
+
+kpis:
+  top_n: 5
+```
+
+##  Local Development (Without Docker)
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run pipeline steps
+python ingestion/fetch_movies.py
+python transform/clean_transform.py
+python analytics/kpis.py
+python visualization/visualize.py
+
+# Run tests locally
+pytest tests/ -v
+```
+

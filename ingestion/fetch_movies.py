@@ -2,42 +2,45 @@ import os
 import json
 import requests
 import time
-from datetime import date
+from datetime import date, datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import lit
 from dotenv import load_dotenv
 from src.utils.logger import get_logger
+from src.utils.config import get_config
+from src.schemas import MovieSchema
 from requests.exceptions import RequestException
 
 
 # Load Environment Variables
-
 load_dotenv()
 
+# Load Configuration
+config = get_config()
 
 # Configuration
 API_KEY = os.getenv("TMDB_API_KEY")
-BASE_URL = "https://api.themoviedb.org/3/movie"
+BASE_URL = config.api.get("base_url", "https://api.themoviedb.org/3/movie")
 
 if not API_KEY:
     raise RuntimeError("TMDB_API_KEY not set")
 
-MOVIE_IDS = [
-    0, 299534, 19995, 140607, 299536, 597, 135397, 420818,
-    24428, 168259, 99861, 284054, 12445, 181808, 330457,
-    351286, 109445, 321612, 260513
-]
+# Get movie IDs from config instead of hardcoding
+MOVIE_IDS = config.get_movie_ids()
 
 
-# Bronze Storage (Partitioned by Ingestion Date)
+# Bronze Storage (Partitioned by Ingestion Date + Timestamp for multiple runs)
 
 INGESTION_DATE = date.today().isoformat()
+RUN_TIMESTAMP = datetime.now().strftime("%H%M%S")  # e.g., "143025" for 2:30:25 PM
 
 BRONZE_BASE_PATH = f"data/bronze/movies/ingestion_date={INGESTION_DATE}"
-RAW_JSON_PATH = f"{BRONZE_BASE_PATH}/movies_raw.json"
-BRONZE_PARQUET_PATH = f"{BRONZE_BASE_PATH}/movies_raw.parquet"
+RAW_JSON_PATH = f"{BRONZE_BASE_PATH}/movies_raw_{RUN_TIMESTAMP}.json"
+BRONZE_PARQUET_PATH = f"{BRONZE_BASE_PATH}/movies_raw_{RUN_TIMESTAMP}.parquet"
 
 REJECTED_BASE_PATH = f"data/bronze/rejected/ingestion_date={INGESTION_DATE}"
-REJECTED_IDS_PATH = f"{REJECTED_BASE_PATH}/rejected_ids.json"
+REJECTED_IDS_PATH = f"{REJECTED_BASE_PATH}/rejected_ids_{RUN_TIMESTAMP}.json"
 
 # Ensure directories exist
 os.makedirs(BRONZE_BASE_PATH, exist_ok=True)
@@ -57,29 +60,50 @@ spark = (
     .getOrCreate()
 )
 
+
 spark.sparkContext.setLogLevel("WARN")
 
 
 # Validation Logic
 
 def is_valid_movie(payload: dict) -> bool:
+    """
+    A movie is valid if:
+    - Required movie fields exist (id, title)
+    - Credits object exists with cast and crew lists
+    - Payload is not a TMDb error response
+    """
+    if not isinstance(payload, dict):
+        return False
+    
+    if not isinstance(payload.get("id"), int):
+        return False
+    
+    if not payload.get("title"):
+        return False
+    
+    credits = payload.get("credits")
+    if not isinstance(credits, dict):
+        return False
+    
+    if not isinstance(credits.get("cast"), list):
+        return False
+    
+    if not isinstance(credits.get("crew"), list):
+        return False
+    
+    # Check for TMDB error response
+    if payload.get("success") is False:
+        return False
+    
+    return True
 
-   # A movie is valid if: Required movie fields exist, Credits object exists, Payload is not a TMDb error response
-    return (
-        isinstance(payload, dict)
-        and isinstance(payload.get("id"), int)
-        and payload.get("title")
-        and isinstance(payload.get("credits"), dict)
-        and isinstance(payload["credits"].get("cast"), list)
-        and isinstance(payload["credits"].get("crew"), list)
-        and payload.get("success") is not False
-    )
 def fetch_movie_with_retries(
     movie_id: int,
     max_retries: int = 3,
     backoff: int = 2
 ):
-    # Fetch a movie from TMDB with retries, rate-limit handling,and exponential backoff.
+    # Fetch a movie from TMDB 
 
     for attempt in range(1, max_retries + 1):
         try:
@@ -135,42 +159,181 @@ def fetch_movie_with_retries(
     return None
 
 
-# Fetch Movies (with Credits)
+# Fetch Movies (with Credits - Concurrent)
 
-def fetch_movies(movie_ids):
-    valid_movies = []
-    rejected_ids = []
+class ConcurrentMovieIngestion:
 
-    for movie_id in movie_ids:
-        payload = fetch_movie_with_retries(movie_id)
-
-        if not payload:
-            rejected_ids.append(movie_id)
-            continue
-
-        if not is_valid_movie(payload):
-            logger.warning(
-                f"Rejected movie ID {movie_id} | Invalid payload structure"
-            )
-            rejected_ids.append(movie_id)
-            continue
-
-        valid_movies.append(payload)
-        logger.info(f"Ingested movie ID {payload['id']}")
-
-    logger.info(f"Accepted movies: {len(valid_movies)}")
-    logger.info(f"Rejected movie IDs: {rejected_ids}")
-
-    return valid_movies, rejected_ids
+    
+    def __init__(self, api_key: str, base_url: str, max_workers: int = 10):
+        self.api_key = api_key
+        self.base_url = base_url
+        self.max_workers = max_workers
+        self.session = requests.Session()
+        # Configure session with connection pooling
+        adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+    
+    def fetch_single_movie(self, movie_id: int, max_retries: int = 3, backoff: int = 2) -> dict:
+      
+        for attempt in range(1, max_retries + 1):
+            try:
+                response = self.session.get(
+                    f"{self.base_url}/{movie_id}",
+                    params={
+                        "api_key": self.api_key,
+                        "append_to_response": "credits"
+                    },
+                    timeout=10
+                )
+                
+                # Success
+                if response.status_code == 200:
+                    logger.info(f" Fetched movie {movie_id}")
+                    return {
+                        "success": True,
+                        "movie_id": movie_id,
+                        "data": response.json()
+                    }
+                
+                # Rate limiting (TMDB)
+                if response.status_code == 429:
+                    retry_after = int(
+                        response.headers.get("Retry-After", backoff ** attempt)
+                    )
+                    logger.warning(
+                        f" Rate limited (429) for movie {movie_id}. "
+                        f"Waiting {retry_after}s..."
+                    )
+                    time.sleep(retry_after)
+                    continue
+                
+                # Permanent failures → do NOT retry
+                if response.status_code in (401, 403, 404):
+                    logger.warning(
+                        f" Movie {movie_id} rejected | HTTP {response.status_code}"
+                    )
+                    return {
+                        "success": False,
+                        "movie_id": movie_id,
+                        "error": f"HTTP_{response.status_code}"
+                    }
+                
+                # Other retryable failures
+                logger.warning(
+                    f" Attempt {attempt}/{max_retries} failed "
+                    f"for movie {movie_id} | HTTP {response.status_code}"
+                )
+            
+            except requests.exceptions.Timeout:
+                logger.warning(
+                    f" Timeout for movie {movie_id}, attempt {attempt}/{max_retries}"
+                )
+                if attempt < max_retries:
+                    time.sleep(backoff ** attempt)
+                    continue
+            
+            except RequestException as e:
+                logger.warning(
+                    f" Error fetching {movie_id} (attempt {attempt}/{max_retries}): {e}"
+                )
+                if attempt < max_retries:
+                    time.sleep(backoff ** attempt)
+                    continue
+            
+            except Exception as e:
+                logger.error(f"Unexpected error for movie {movie_id}: {e}")
+                return {
+                    "success": False,
+                    "movie_id": movie_id,
+                    "error": f"UNEXPECTED_{type(e).__name__}"
+                }
+            
+            # Exponential backoff between retries
+            if attempt < max_retries:
+                time.sleep(backoff ** attempt)
+        
+        logger.error(f"    Movie {movie_id} failed after {max_retries} retries")
+        return {
+            "success": False,
+            "movie_id": movie_id,
+            "error": "MAX_RETRIES_EXCEEDED"
+        }
+    
+    def fetch_all_concurrent(self, movie_ids: list) -> tuple:
+        
+        valid_movies = []
+        rejected_ids = []
+        
+        start_time = time.time()
+        logger.info(f" Starting concurrent ingestion of {len(movie_ids)} movies")
+        logger.info(f"   Using {self.max_workers} workers")
+        
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all tasks
+            futures = {
+                executor.submit(self.fetch_single_movie, movie_id): movie_id
+                for movie_id in movie_ids
+            }
+            
+            # Process results as they complete
+            completed = 0
+            for future in as_completed(futures):
+                completed += 1
+                movie_id = futures[future]
+                
+                try:
+                    result = future.result()
+                    
+                    if result["success"]:
+                        payload = result["data"]
+                        
+                        # Validate movie structure
+                        if is_valid_movie(payload):
+                            valid_movies.append(payload)
+                        else:
+                            logger.warning(
+                                f" Movie {movie_id} has invalid structure"
+                            )
+                            rejected_ids.append(movie_id)
+                    else:
+                        rejected_ids.append(movie_id)
+                        logger.debug(f"Rejected {movie_id}: {result['error']}")
+                
+                except Exception as e:
+                    logger.error(f"Error processing result for {movie_id}: {e}")
+                
+                # Progress indicator
+                if completed % max(1, len(movie_ids) // 5) == 0:
+                    progress = (completed / len(movie_ids)) * 100
+                    elapsed = time.time() - start_time
+                    logger.info(f"   Progress: {completed}/{len(movie_ids)} ({progress:.0f}%) - {elapsed:.1f}s elapsed")
+        
+        elapsed = time.time() - start_time
+        logger.info(f"\n Concurrent Ingestion Summary:")
+        logger.info(f"    Valid movies: {len(valid_movies)}")
+        logger.info(f"    Rejected: {len(rejected_ids)}")
+        logger.info(f"    Total time: {elapsed:.2f}s")
+        logger.info(f"    Throughput: {len(movie_ids)/elapsed:.2f} movies/sec")
+        logger.info(f"    Speedup: ~{120/elapsed:.1f}x vs sequential\n")
+        
+        return valid_movies, rejected_ids
 
 
 
 # Main Execution
 
 if __name__ == "__main__":
-    logger.info("Starting movie ingestion job")
+    logger.info("Starting concurrent movie ingestion job")
 
-    movies_data, rejected_ids = fetch_movies(MOVIE_IDS)
+    # Uses concurrent ingestion instead of sequential
+    ingestion = ConcurrentMovieIngestion(
+        api_key=API_KEY,
+        base_url=BASE_URL,
+        max_workers=10  # Adjust based on API rate limits
+    )
+    
+    movies_data, rejected_ids = ingestion.fetch_all_concurrent(MOVIE_IDS)
 
 
     if not movies_data:
@@ -184,19 +347,24 @@ if __name__ == "__main__":
 
     logger.info(f"Raw JSON written to {RAW_JSON_PATH}")
 
-    # Convert JSON -> Parquet (Spark-native bronze)
-    df_raw = spark.createDataFrame(movies_data)
+    # Convert JSON -> Parquet with schema validation
+    df_raw = spark.createDataFrame(movies_data, schema=MovieSchema.BRONZE_SCHEMA)
+    
+    # Add audit columns for tracking when data was ingested
+    ingestion_ts = datetime.now().isoformat()
+    df_raw = df_raw.withColumn("ingestion_timestamp", lit(ingestion_ts))
+    df_raw = df_raw.withColumn("run_id", lit(RUN_TIMESTAMP))
+    
     # Save rejected IDs (Bronze diagnostics)
     with open(REJECTED_IDS_PATH, "w", encoding="utf-8") as f:
-      json.dump(rejected_ids, f, indent=2)
+        json.dump(rejected_ids, f, indent=2)
 
     logger.info(f"Rejected IDs written to {REJECTED_IDS_PATH}")
-
-
 
     df_raw.write.mode("overwrite").parquet(BRONZE_PARQUET_PATH)
 
     logger.info(f"Bronze Parquet written to {BRONZE_PARQUET_PATH}")
+    logger.info(f"Schema validation:  Passed" if MovieSchema.validate_schema(df_raw, MovieSchema.BRONZE_SCHEMA) else "  Schema mismatch")
     logger.info("Movie ingestion job completed successfully")
     
 

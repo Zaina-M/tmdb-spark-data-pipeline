@@ -1,0 +1,103 @@
+# Movie Data Pipeline Configuration
+# This file centralizes all pipeline settings to avoid hardcoding values.
+
+# API CONFIGURATION
+
+api:
+  base_url: "https://api.themoviedb.org/3/movie"
+  max_retries: 3
+  backoff_multiplier: 2
+  timeout_seconds: 10
+
+# INGESTION SETTINGS
+
+ingestion:
+  # Method: "static" uses movie_ids list, "dynamic" fetches popular/top_rated
+  method: "dynamic"
+  
+  # Static list of movie IDs (used when method = "static")
+  movie_ids:
+    - 299534   # Avengers: Endgame
+    - 19995    # Avatar
+    - 140607   # Star Wars: The Force Awakens
+    - 299536   # Avengers: Infinity War
+    - 597      # Titanic
+    - 135397   # Jurassic World
+    - 420818   # The Lion King
+    - 24428    # The Avengers
+    - 168259   # Furious 7
+    - 99861    # Avengers: Age of Ultron
+    - 284054   # Black Panther
+    - 12445    # Harry Potter and the Deathly Hallows Part 2
+    - 181808   # Star Wars: The Last Jedi
+    - 330457   # Frozen II
+    - 351286   # Jurassic World: Fallen Kingdom
+    - 109445   # Frozen
+    - 321612   # Beauty and the Beast
+    - 260513   # Incredibles 2
+
+  # Dynamic fetching settings (used when method = "dynamic")
+  dynamic:
+    # Endpoints to fetch from: popular, top_rated, now_playing, upcoming
+    endpoints:
+      - "popular"
+      - "top_rated"
+    pages_per_endpoint: 5  # Each page has ~20 movies
+    
+  # Concurrency settings
+  max_workers: 10
+
+# DATA PATHS
+
+paths:
+  bronze: "data/bronze/movies"
+  silver: "data/silver/movies_curated"
+  gold: "data/gold"
+  visualizations: "data/visualizations"
+  rejected: "data/bronze/rejected"
+
+
+# TRANSFORMATION SETTINGS
+
+transformation:
+  # Minimum values for ROI calculation
+  min_budget_for_roi: 10  # in millions USD
+  min_votes_for_rating: 10
+  
+  # Columns to drop from raw data
+  drop_columns:
+    - "adult"
+    - "imdb_id"
+    - "original_title"
+    - "video"
+    - "homepage"
+    - "status"
+
+
+# KPI SETTINGS
+
+kpis:
+  top_n: 5  # Number of movies to include in rankings
+  
+  # List of KPIs to calculate
+  metrics:
+    - "highest_revenue"
+    - "highest_budget"
+    - "highest_profit"
+    - "lowest_profit"
+    - "highest_roi"
+    - "lowest_roi"
+    - "most_voted"
+    - "highest_rated"
+    - "lowest_rated"
+    - "most_popular"
+
+
+# QUALITY THRESHOLDS
+
+quality:
+  max_rejection_rate: 0.2  # Alert if more than 20% of movies are rejected
+  required_fields:
+    - "id"
+    - "title"
+    - "release_date"

@@ -17,11 +17,11 @@ COPY ./visualization ./visualization
 COPY ./src ./src
 COPY ./requirements.txt .
 
-# Install Python deps once
+
 USER root
-RUN pip install --no-cache-dir -r requirements.txt
 
-USER spark
+RUN pip install --no-cache-dir -r requirements.txt jupyter jupyterlab ipywidgets
 
-# IMPORTANT: do NOT auto-run spark-submit
-CMD ["tail", "-f", "/dev/null"]
+WORKDIR /opt/app
+
+CMD ["jupyter", "lab", "--ip=0.0.0.0", "--port=8888", "--no-browser", "--allow-root", "--NotebookApp.token=''"]

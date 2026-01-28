@@ -29,8 +29,11 @@ def main():
 
     # 1. Read Bronze (all ingestion dates)
     df = spark.read.option("multiline", "true").json(BRONZE_BASE_PATH)
-
-    logger.info(f"Initial row count: {df.count()}")
+    
+    # Cache to avoid recomputing when counting
+    df.cache()
+    initial_count = df.count()
+    logger.info(f"Initial row count: {initial_count}")
 
      
     # 2. Filter Released movies
@@ -165,11 +168,14 @@ def main():
     df = df.select(*[c for c in final_columns if c in df.columns])
 
     
-    # 11. Write curated dataset(silver)
+    # 11. Write curated dataset(silver) + log metrics
+    final_count = df.count()  # Single count before writing
     df.write.mode("overwrite").parquet(SILVER_PATH)
+    df.unpersist()  # Release cached data AFTER writing
 
     logger.info(f"Curated dataset written to {SILVER_PATH}")
-    logger.info(f"Final row count: {df.count()}")
+    logger.info(f"Final row count: {final_count}")
+    logger.info(f"Rows dropped: {initial_count - final_count}")
 
     spark.stop()
     logger.info("Transformation job completed successfully")

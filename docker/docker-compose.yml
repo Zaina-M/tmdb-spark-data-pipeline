@@ -74,3 +74,49 @@ services:
       /opt/spark/bin/spark-submit
       --master local[*]
       /opt/app/visualization/visualize.py
+
+  notebook:
+    image: movie-spark-pipeline
+    container_name: spark-notebook
+    ports:
+      - "8888:8888"
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/opt/app
+      - JUPYTER_ENABLE_LAB=yes
+    volumes:
+      - ../data:/opt/app/data
+      - ../notebooks:/opt/app/notebooks
+      - ../src:/opt/app/src
+      - ../ingestion:/opt/app/ingestion
+      - ../transform:/opt/app/transform
+      - ../analytics:/opt/app/analytics
+      - ../visualization:/opt/app/visualization
+    command: >
+      jupyter lab
+      --ip=0.0.0.0
+      --port=8888
+      --no-browser
+      --allow-root
+      --NotebookApp.token=''
+      --NotebookApp.password=''
+
+  # Test service - runs unit and integration tests
+  tests:
+    image: movie-spark-pipeline
+    container_name: spark-tests
+    env_file:
+      - ../.env
+    environment:
+      - PYTHONPATH=/opt/app
+    volumes:
+      - ../data:/opt/app/data
+      - ../tests:/opt/app/tests
+      - ../src:/opt/app/src
+      - ../ingestion:/opt/app/ingestion
+      - ../transform:/opt/app/transform
+      - ../analytics:/opt/app/analytics
+    command: >
+      pytest /opt/app/tests -v --tb=short
+    
