@@ -1,8 +1,8 @@
 import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    col, when, size, explode, concat_ws,
-    to_date, year, array, lit, filter, transform, coalesce
+    col, when, size, concat_ws,
+    to_date, filter, transform, 
 )
 from src.utils.logger import get_logger
 from src.utils.config import get_config
