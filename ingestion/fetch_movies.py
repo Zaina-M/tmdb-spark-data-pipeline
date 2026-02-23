@@ -264,9 +264,9 @@ class ConcurrentMovieIngestion:
 # Main Execution
 
 if __name__ == "__main__":
-    logger.info("Starting concurrent movie ingestion job")
+    logger.info("Starting  movie ingestion job")
 
-    # Uses concurrent ingestion instead of sequential
+    
     ingestion = ConcurrentMovieIngestion(
         api_key=API_KEY,
         base_url=BASE_URL,
@@ -301,8 +301,7 @@ if __name__ == "__main__":
 
     logger.info(f"Rejected IDs written to {REJECTED_IDS_PATH}")
 
-    # Append mode ensures Bronze layer is immutable (no accidental overwrites)
-    # Each run writes to a unique timestamped path anyway, but append is safer
+    
     df_raw.write.mode("append").parquet(BRONZE_PARQUET_PATH)
 
     logger.info(f"Bronze Parquet written to {BRONZE_PARQUET_PATH}")
