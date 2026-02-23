@@ -2,17 +2,23 @@ import os
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, when, size, explode, concat_ws,
-    to_date, year, array, lit, filter, transform
+    to_date, year, array, lit, filter, transform, coalesce
 )
 from src.utils.logger import get_logger
+from src.utils.config import get_config
 from src.schemas import MovieSchema
 
 logger = get_logger(__name__)
+config = get_config()
 
+# Use config paths with Docker fallback
+BRONZE_BASE_PATH = os.getenv("BRONZE_PATH", config.paths.get("bronze", "data/bronze/movies"))
+SILVER_PATH = os.getenv("SILVER_PATH", config.paths.get("silver", "data/silver/movies_curated"))
 
-
-BRONZE_BASE_PATH = "/opt/app/data/bronze/movies"
-SILVER_PATH = "/opt/app/data/silver/movies_curated"
+# Handle Docker environment
+if os.path.exists("/opt/app/data"):
+    BRONZE_BASE_PATH = "/opt/app/data/bronze/movies"
+    SILVER_PATH = "/opt/app/data/silver/movies_curated"
 
 
 def main():
@@ -66,19 +72,24 @@ def main():
             concat_ws("|", transform(col("spoken_languages"), lambda x: x["iso_639_1"])))
     )
     
-    # 5. Extract cast & director
+    # 5. Extract cast & director (with null handling for missing directors)
     df = (
         df
         .withColumn("cast",
             concat_ws("|", transform(col("credits.cast"), lambda x: x["name"])))
         .withColumn("cast_size", size(col("credits.cast")))
         .withColumn(
-            "director",
+            "_director_array",
             transform(
                 filter(col("credits.crew"), lambda x: x["job"] == "Director"),
                 lambda x: x["name"]
-            )[0]
+            )
         )
+        .withColumn(
+            "director",
+            when(size(col("_director_array")) > 0, col("_director_array")[0]).otherwise(None)
+        )
+        .drop("_director_array")
         .withColumn("crew_size", size(col("credits.crew")))
         .drop("credits")
     )
@@ -136,19 +147,12 @@ def main():
     non_null_expr = sum(col(c).isNotNull().cast("int") for c in df.columns)
     df = df.filter(non_null_expr >= 10)
 
-    # 9. Calculate ROI
-    df = df.withColumn(
-        "roi",
-        when(col("budget_musd") > 0  , col("revenue_musd") / col("budget_musd") )
-             
-)
-    
-    # 10. Reorder columns
+    # 9. Reorder columns 
 
     final_columns = [
         "id", "title", "tagline", "release_date", "genres",
         "belongs_to_collection", "original_language",
-        "budget_musd", "revenue_musd","roi",
+        "budget_musd", "revenue_musd",
         "production_companies", "production_countries",
         "vote_count", "vote_average", "popularity",
         "runtime", "overview", "spoken_languages",
