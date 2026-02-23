@@ -98,7 +98,7 @@ def is_valid_movie(payload: dict) -> bool:
     
     return True
 
-# Fetch Movies (with Credits - Concurrent)
+
 
 class ConcurrentMovieIngestion:
 
