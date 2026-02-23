@@ -5,12 +5,21 @@ import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import year, col
 from src.utils.logger import get_logger
+from src.utils.config import get_config
 
 logger = get_logger(__name__)
+config = get_config()
 
-SILVER_PATH = "/opt/app/data/silver/movies_curated"
-GOLD_PATH = "/opt/app/data/gold"
-VISUAL_PATH = "/opt/app/data/visualizations"
+# PATHS - Use config with Docker fallback
+SILVER_PATH = os.getenv("SILVER_PATH", config.paths.get("silver", "data/silver/movies_curated"))
+GOLD_PATH = os.getenv("GOLD_PATH", config.paths.get("gold", "data/gold"))
+VISUAL_PATH = os.getenv("VISUAL_PATH", config.paths.get("visualizations", "data/visualizations"))
+
+# Handle Docker environment
+if os.path.exists("/opt/app/data"):
+    SILVER_PATH = "/opt/app/data/silver/movies_curated"
+    GOLD_PATH = "/opt/app/data/gold"
+    VISUAL_PATH = "/opt/app/data/visualizations"
 
 os.makedirs(VISUAL_PATH, exist_ok=True)
 
