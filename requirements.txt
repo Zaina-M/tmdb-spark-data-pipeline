@@ -13,7 +13,7 @@ loguru==0.7.0
 
 # Visualization (for later analysis)
 matplotlib
-seaborn
+
 
 
 # Utilities
