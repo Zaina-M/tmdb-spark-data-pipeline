@@ -82,60 +82,80 @@ class TestMovieValidation:
         assert is_valid_movie([1, 2, 3]) is False
 
 
-class TestFetchMovieWithRetries:
-    # Tests for the API fetch function with retry logic.
+class TestConcurrentMovieIngestion:
+    # Tests for the ConcurrentMovieIngestion class with retry logic.
     
-    @patch('ingestion.fetch_movies.requests.get')
-    def test_successful_fetch_returns_data(self, mock_get):
+    def test_successful_fetch_returns_data(self):
         """Successful API call should return movie data."""
-        from ingestion.fetch_movies import fetch_movie_with_retries
+        from ingestion.fetch_movies import ConcurrentMovieIngestion
         
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"id": 123, "title": "Test"}
-        mock_get.return_value = mock_response
+        ingestion = ConcurrentMovieIngestion(
+            api_key="test_key",
+            base_url="https://api.themoviedb.org/3/movie",
+            max_workers=1
+        )
         
-        result = fetch_movie_with_retries(123)
-        
-        assert result is not None
-        assert result["id"] == 123
+        # Mock the session.get method
+        with patch.object(ingestion.session, 'get') as mock_get:
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {"id": 123, "title": "Test"}
+            mock_get.return_value = mock_response
+            
+            result = ingestion.fetch_single_movie(123)
+            
+            assert result["success"] is True
+            assert result["data"]["id"] == 123
     
-    @patch('ingestion.fetch_movies.requests.get')
-    def test_404_returns_none(self, mock_get):
-        """404 response should return None without retrying."""
-        from ingestion.fetch_movies import fetch_movie_with_retries
+    def test_404_returns_failure(self):
+        """404 response should return failure without retrying."""
+        from ingestion.fetch_movies import ConcurrentMovieIngestion
         
-        mock_response = Mock()
-        mock_response.status_code = 404
-        mock_get.return_value = mock_response
+        ingestion = ConcurrentMovieIngestion(
+            api_key="test_key",
+            base_url="https://api.themoviedb.org/3/movie",
+            max_workers=1
+        )
         
-        result = fetch_movie_with_retries(99999)
-        
-        assert result is None
-        # Should only call once (no retries for 404)
-        assert mock_get.call_count == 1
+        with patch.object(ingestion.session, 'get') as mock_get:
+            mock_response = Mock()
+            mock_response.status_code = 404
+            mock_get.return_value = mock_response
+            
+            result = ingestion.fetch_single_movie(99999)
+            
+            assert result["success"] is False
+            assert result["error"] == "HTTP_404"
+            # Should only call once (no retries for 404)
+            assert mock_get.call_count == 1
     
-    @patch('ingestion.fetch_movies.requests.get')
     @patch('ingestion.fetch_movies.time.sleep')
-    def test_rate_limit_retries(self, mock_sleep, mock_get):
+    def test_rate_limit_retries(self, mock_sleep):
         """429 rate limit should trigger retry with backoff."""
-        from ingestion.fetch_movies import fetch_movie_with_retries
+        from ingestion.fetch_movies import ConcurrentMovieIngestion
         
-        # First call: rate limited, second call: success
-        rate_limit_response = Mock()
-        rate_limit_response.status_code = 429
-        rate_limit_response.headers = {"Retry-After": "1"}
+        ingestion = ConcurrentMovieIngestion(
+            api_key="test_key",
+            base_url="https://api.themoviedb.org/3/movie",
+            max_workers=1
+        )
         
-        success_response = Mock()
-        success_response.status_code = 200
-        success_response.json.return_value = {"id": 123, "title": "Test"}
-        
-        mock_get.side_effect = [rate_limit_response, success_response]
-        
-        result = fetch_movie_with_retries(123)
-        
-        assert result is not None
-        assert mock_get.call_count == 2
+        with patch.object(ingestion.session, 'get') as mock_get:
+            # First call: rate limited, second call: success
+            rate_limit_response = Mock()
+            rate_limit_response.status_code = 429
+            rate_limit_response.headers = {"Retry-After": "1"}
+            
+            success_response = Mock()
+            success_response.status_code = 200
+            success_response.json.return_value = {"id": 123, "title": "Test"}
+            
+            mock_get.side_effect = [rate_limit_response, success_response]
+            
+            result = ingestion.fetch_single_movie(123)
+            
+            assert result["success"] is True
+            assert mock_get.call_count == 2
 
 
 class TestConfigIntegration:
