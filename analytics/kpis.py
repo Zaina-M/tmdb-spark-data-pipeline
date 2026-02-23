@@ -1,17 +1,23 @@
+import os
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import (
     col, when, desc, asc, expr, round, 
 )
 from pyspark.sql.types import StringType
 from src.utils.logger import get_logger
+from src.utils.config import get_config
 
 logger = get_logger(__name__)
+config = get_config()
 
+# PATHS - Use config with Docker fallback
+SILVER_PATH = os.getenv("SILVER_PATH", config.paths.get("silver", "data/silver/movies_curated"))
+GOLD_PATH = os.getenv("GOLD_PATH", config.paths.get("gold", "data/gold"))
 
-# PATHS
-
-SILVER_PATH = "/opt/app/data/silver/movies_curated"
-GOLD_PATH = "/opt/app/data/gold"
+# Handle Docker environment
+if os.path.exists("/opt/app/data"):
+    SILVER_PATH = "/opt/app/data/silver/movies_curated"
+    GOLD_PATH = "/opt/app/data/gold"
 
 def prepare_kpis(df: DataFrame) -> DataFrame:
 
