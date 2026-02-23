@@ -110,7 +110,7 @@ class ConcurrentMovieIngestion:
         self.session = requests.Session()
         # Configure session with connection pooling
         adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers)
-        self.session.mount('http://', adapter) # Apply this adapter to all HTTPS requests
+        self.session.mount('http://', adapter) # Apply this adapter to all HTTP requests
         self.session.mount('https://', adapter)
     
     def fetch_single_movie(self, movie_id: int, max_retries: int = 3, backoff: int = 2) -> dict:
