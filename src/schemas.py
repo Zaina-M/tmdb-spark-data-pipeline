@@ -190,11 +190,13 @@ class MovieSchema:
     
     @staticmethod
     def validate_schema(df, expected_schema: StructType) -> bool:
-        
-        # Validate if DataFrame matches expected schema.
-        
-        
-        return df.schema == expected_schema
+        actual = {f.name: f.dataType for f in df.schema.fields}
+        for field in expected_schema.fields:
+            if field.name not in actual:
+                return False
+            if actual[field.name] != field.dataType:
+                return False
+        return True
     
     
     @staticmethod
