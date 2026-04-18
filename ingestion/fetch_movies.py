@@ -289,23 +289,30 @@ if __name__ == "__main__":
 
     # Convert JSON -> Parquet with schema validation
     df_raw = spark.createDataFrame(movies_data, schema=MovieSchema.BRONZE_SCHEMA)
-    
+
+    # Validate before audit columns are added and before any write
+    if not MovieSchema.validate_schema(df_raw, MovieSchema.BRONZE_SCHEMA):
+        logger.error("Schema validation failed — aborting write.")
+        MovieSchema.print_schema_comparison(df_raw, MovieSchema.BRONZE_SCHEMA)
+        spark.stop()
+        exit(1)
+
+    logger.info("Schema validation passed.")
+
     # Add audit columns for tracking when data was ingested
     ingestion_ts = datetime.now().isoformat()
     df_raw = df_raw.withColumn("ingestion_timestamp", lit(ingestion_ts))
     df_raw = df_raw.withColumn("run_id", lit(RUN_TIMESTAMP))
-    
+
     # Save rejected IDs (Bronze diagnostics)
     with open(REJECTED_IDS_PATH, "w", encoding="utf-8") as f:
         json.dump(rejected_ids, f, indent=2)
 
     logger.info(f"Rejected IDs written to {REJECTED_IDS_PATH}")
 
-    
     df_raw.write.mode("append").parquet(BRONZE_PARQUET_PATH)
 
     logger.info(f"Bronze Parquet written to {BRONZE_PARQUET_PATH}")
-    logger.info(f"Schema validation:  Passed" if MovieSchema.validate_schema(df_raw, MovieSchema.BRONZE_SCHEMA) else "  Schema mismatch")
     logger.info("Movie ingestion job completed successfully")
     
 
