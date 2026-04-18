@@ -3,7 +3,7 @@ import sys
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, when, size, concat_ws,
-    to_date, filter, transform,
+    to_date, filter, transform, lit,
 )
 from src.utils.logger import get_logger
 from src.utils.config import get_config
@@ -21,24 +21,26 @@ if os.path.exists("/opt/app/data"):
     BRONZE_BASE_PATH = "/opt/app/data/bronze/movies"
     SILVER_PATH = "/opt/app/data/silver/movies_curated"
 
+DONE_DIR = os.path.join(SILVER_PATH, ".done")
 
-def find_next_bronze_file(bronze_base: str, silver_base: str):
+
+def find_unprocessed_bronze_files(bronze_base: str) -> list:
     """
-    Scan all bronze parquet dirs across all ingestion_date partitions and return
-    the (ingestion_date, parquet_dir_path, silver_out_path) for the latest file
-    that has not yet been successfully written to silver.
-    CLI arg / env var can pin a specific date; file selection is still by success marker.
+    Return list of (date, bronze_path, stem) for every bronze parquet dir
+    that has no corresponding .done marker in silver.
+    CLI arg / INGESTION_DATE env var pins processing to a single date.
     """
     pin_date = sys.argv[1] if len(sys.argv) > 1 else os.getenv("INGESTION_DATE")
 
     date_partitions = sorted([
         d for d in os.listdir(bronze_base)
         if d.startswith("ingestion_date=") and os.path.isdir(os.path.join(bronze_base, d))
-    ], reverse=True)
+    ])
 
     if not date_partitions:
         raise FileNotFoundError(f"No ingestion_date partitions found in {bronze_base}")
 
+    unprocessed = []
     for partition in date_partitions:
         date = partition.split("=", 1)[1]
         if pin_date and date != pin_date:
@@ -47,57 +49,34 @@ def find_next_bronze_file(bronze_base: str, silver_base: str):
         parquet_dirs = sorted([
             d for d in os.listdir(partition_dir)
             if d.endswith(".parquet") and os.path.isdir(os.path.join(partition_dir, d))
-        ], reverse=True)
+        ])
         for pq_dir in parquet_dirs:
             stem = pq_dir[: -len(".parquet")]
-            silver_out = os.path.join(silver_base, f"ingestion_date={date}", stem)
-            if not os.path.exists(os.path.join(silver_out, "_SUCCESS")):
-                bronze_path = os.path.join(partition_dir, pq_dir)
-                return date, bronze_path, silver_out
+            marker = os.path.join(DONE_DIR, f"{date}__{stem}")
+            if not os.path.exists(marker):
+                unprocessed.append((date, os.path.join(partition_dir, pq_dir), stem))
 
-    raise RuntimeError("All bronze parquet files have already been processed into silver.")
+    return unprocessed
 
 
-def main():
-    spark = (
-        SparkSession.builder
-        .appName("movie_data_clean_transforma")
-        .config("spark.sql.shuffle.partitions", "4")
-        .getOrCreate()
-    )
+def mark_done(date: str, stem: str):
+    os.makedirs(DONE_DIR, exist_ok=True)
+    open(os.path.join(DONE_DIR, f"{date}__{stem}"), "w").close()
 
-    spark.sparkContext.setLogLevel("WARN")
-    logger.info("Starting data cleaning & transformation job")
 
-    ingestion_date, bronze_path, silver_out = find_next_bronze_file(BRONZE_BASE_PATH, SILVER_PATH)
-    logger.info(f"Processing ingestion_date={ingestion_date} | file={bronze_path}")
-
-    # 1. Read current ingestion file only
-    df = spark.read.parquet(bronze_path)
-    
-    # Cache to avoid recomputing when counting
-    df.cache()
+def transform_bronze(df, spark):
     initial_count = df.count()
     logger.info(f"Initial row count: {initial_count}")
 
-     
-    # 2. Filter Released movies
+    # Filter Released movies
     if "status" in df.columns:
         df = df.filter(col("status") == "Released")
 
-    
-    # 3. Drop irrelevant columns
-    
-    drop_cols = [
-        "adult", "imdb_id", "original_title",
-        "video", "homepage", "status"
-    ]
-
+    # Drop irrelevant columns
+    drop_cols = ["adult", "imdb_id", "original_title", "video", "homepage", "status"]
     df = df.drop(*[c for c in drop_cols if c in df.columns])
 
-    
-    # 4. Flatten JSON-like columns
-    
+    # Flatten JSON-like columns
     df = (
         df
         .withColumn("belongs_to_collection", col("belongs_to_collection.name"))
@@ -110,8 +89,8 @@ def main():
         .withColumn("spoken_languages",
             concat_ws("|", transform(col("spoken_languages"), lambda x: x["iso_639_1"])))
     )
-    
-    # 5. Extract cast & director (with null handling for missing directors)
+
+    # Extract cast & director
     df = (
         df
         .withColumn("cast",
@@ -133,19 +112,15 @@ def main():
         .drop("credits")
     )
 
-    
-    # 6. Type casting (using schema-defined types)
+    # Type casting
     numeric_cols = MovieSchema.get_numeric_columns()
-
     for col_name, dtype in numeric_cols.items():
         if col_name in df.columns:
             df = df.withColumn(col_name, col(col_name).cast(dtype))
 
     df = df.withColumn("release_date", to_date(col("release_date")))
 
-
-    # 7. Handle unrealistic values
-    
+    # Handle unrealistic values
     df = (
         df
         .withColumn("budget", when(col("budget") <= 0, None).otherwise(col("budget")))
@@ -174,20 +149,15 @@ def main():
         .withColumn("tagline", when(col("tagline") == "No Data", None).otherwise(col("tagline")))
     )
 
-    
-    # 7. Remove duplicates & invalid rows
-    
+    # Remove duplicates & invalid rows
     df = df.dropDuplicates(["id"])
     df = df.dropna(subset=["id", "title"])
 
-    
-    # 8. Keep rows with at least 10 non-null columns
-  
+    # Keep rows with at least 10 non-null columns
     non_null_expr = sum(col(c).isNotNull().cast("int") for c in df.columns)
     df = df.filter(non_null_expr >= 10)
 
-    # 9. Reorder columns 
-
+    # Reorder columns
     final_columns = [
         "id", "title", "tagline", "release_date", "genres",
         "belongs_to_collection", "original_language",
@@ -196,20 +166,52 @@ def main():
         "vote_count", "vote_average", "popularity",
         "runtime", "overview", "spoken_languages",
         "poster_path", "cast", "cast_size",
-        "director", "crew_size"
+        "director", "crew_size",
     ]
-
     df = df.select(*[c for c in final_columns if c in df.columns])
 
-    
-    # 11. Write curated dataset(silver) + log metrics
-    final_count = df.count()  # Single count before writing
-    df.write.mode("overwrite").parquet(silver_out)
-    df.unpersist()  # Release cached data AFTER writing
+    return df, initial_count
 
-    logger.info(f"Curated dataset written to {SILVER_PATH}")
-    logger.info(f"Final row count: {final_count}")
-    logger.info(f"Rows dropped: {initial_count - final_count}")
+
+def main():
+    spark = (
+        SparkSession.builder
+        .appName("movie_data_clean_transforma")
+        .config("spark.sql.shuffle.partitions", "4")
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("WARN")
+    logger.info("Starting data cleaning & transformation job")
+
+    files = find_unprocessed_bronze_files(BRONZE_BASE_PATH)
+    if not files:
+        logger.info("No unprocessed bronze files found. Nothing to do.")
+        spark.stop()
+        return
+
+    logger.info(f"Found {len(files)} unprocessed bronze file(s).")
+
+    for date, bronze_path, stem in files:
+        logger.info(f"Processing ingestion_date={date} | file={stem}")
+
+        df = spark.read.parquet(bronze_path)
+        df.cache()
+
+        df, initial_count = transform_bronze(df, spark)
+
+        # Tag with ingestion_date so silver is properly Hive-partitioned
+        df = df.withColumn("ingestion_date", lit(date))
+
+        final_count = df.count()
+        (df.write
+           .mode("append")
+           .partitionBy("ingestion_date")
+           .parquet(SILVER_PATH))
+
+        df.unpersist()
+        mark_done(date, stem)
+
+        logger.info(f"Written to silver | ingestion_date={date} | rows={final_count} | dropped={initial_count - final_count}")
 
     spark.stop()
     logger.info("Transformation job completed successfully")
