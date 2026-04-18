@@ -1,8 +1,9 @@
 import os
+import sys
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
     col, when, size, concat_ws,
-    to_date, filter, transform, 
+    to_date, filter, transform,
 )
 from src.utils.logger import get_logger
 from src.utils.config import get_config
@@ -21,6 +22,42 @@ if os.path.exists("/opt/app/data"):
     SILVER_PATH = "/opt/app/data/silver/movies_curated"
 
 
+def find_next_bronze_file(bronze_base: str, silver_base: str):
+    """
+    Scan all bronze parquet dirs across all ingestion_date partitions and return
+    the (ingestion_date, parquet_dir_path, silver_out_path) for the latest file
+    that has not yet been successfully written to silver.
+    CLI arg / env var can pin a specific date; file selection is still by success marker.
+    """
+    pin_date = sys.argv[1] if len(sys.argv) > 1 else os.getenv("INGESTION_DATE")
+
+    date_partitions = sorted([
+        d for d in os.listdir(bronze_base)
+        if d.startswith("ingestion_date=") and os.path.isdir(os.path.join(bronze_base, d))
+    ], reverse=True)
+
+    if not date_partitions:
+        raise FileNotFoundError(f"No ingestion_date partitions found in {bronze_base}")
+
+    for partition in date_partitions:
+        date = partition.split("=", 1)[1]
+        if pin_date and date != pin_date:
+            continue
+        partition_dir = os.path.join(bronze_base, partition)
+        parquet_dirs = sorted([
+            d for d in os.listdir(partition_dir)
+            if d.endswith(".parquet") and os.path.isdir(os.path.join(partition_dir, d))
+        ], reverse=True)
+        for pq_dir in parquet_dirs:
+            stem = pq_dir[: -len(".parquet")]
+            silver_out = os.path.join(silver_base, f"ingestion_date={date}", stem)
+            if not os.path.exists(os.path.join(silver_out, "_SUCCESS")):
+                bronze_path = os.path.join(partition_dir, pq_dir)
+                return date, bronze_path, silver_out
+
+    raise RuntimeError("All bronze parquet files have already been processed into silver.")
+
+
 def main():
     spark = (
         SparkSession.builder
@@ -32,9 +69,11 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
     logger.info("Starting data cleaning & transformation job")
 
+    ingestion_date, bronze_path, silver_out = find_next_bronze_file(BRONZE_BASE_PATH, SILVER_PATH)
+    logger.info(f"Processing ingestion_date={ingestion_date} | file={bronze_path}")
 
-    # 1. Read Bronze (all ingestion dates)
-    df = spark.read.option("multiline", "true").json(BRONZE_BASE_PATH)
+    # 1. Read current ingestion file only
+    df = spark.read.parquet(bronze_path)
     
     # Cache to avoid recomputing when counting
     df.cache()
@@ -165,7 +204,7 @@ def main():
     
     # 11. Write curated dataset(silver) + log metrics
     final_count = df.count()  # Single count before writing
-    df.write.mode("overwrite").parquet(SILVER_PATH)
+    df.write.mode("overwrite").parquet(silver_out)
     df.unpersist()  # Release cached data AFTER writing
 
     logger.info(f"Curated dataset written to {SILVER_PATH}")
