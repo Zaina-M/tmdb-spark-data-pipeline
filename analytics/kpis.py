@@ -1,7 +1,8 @@
 import os
+import sys
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import (
-    col, when, desc, asc, expr, round, 
+    col, when, desc, asc, expr, round,
 )
 from pyspark.sql.types import StringType
 from src.utils.logger import get_logger
@@ -19,9 +20,38 @@ if os.path.exists("/opt/app/data"):
     SILVER_PATH = "/opt/app/data/silver/movies_curated"
     GOLD_PATH = "/opt/app/data/gold"
 
-def prepare_kpis(df: DataFrame) -> DataFrame:
+DONE_DIR = os.path.join(GOLD_PATH, ".done")
 
-    # Adds profit and ROI columns using Spark-native expressions.
+
+def find_unprocessed_silver_dates(silver_base: str) -> list:
+    """Return sorted list of ingestion_date values present in silver but not yet KPI'd."""
+    pin_date = sys.argv[1] if len(sys.argv) > 1 else os.getenv("INGESTION_DATE")
+
+    if not os.path.isdir(silver_base):
+        raise FileNotFoundError(f"Silver path not found: {silver_base}")
+
+    dates = sorted([
+        d.split("=", 1)[1]
+        for d in os.listdir(silver_base)
+        if d.startswith("ingestion_date=") and os.path.isdir(os.path.join(silver_base, d))
+    ])
+
+    if not dates:
+        raise FileNotFoundError(f"No ingestion_date partitions found in {silver_base}")
+
+    return [
+        date for date in dates
+        if (not pin_date or date == pin_date)
+        and not os.path.exists(os.path.join(DONE_DIR, date))
+    ]
+
+
+def mark_done(date: str):
+    os.makedirs(DONE_DIR, exist_ok=True)
+    open(os.path.join(DONE_DIR, date), "w").close()
+
+
+def prepare_kpis(df: DataFrame) -> DataFrame:
     return (
         df
         .withColumn("profit_musd", col("revenue_musd") - col("budget_musd"))
@@ -32,8 +62,6 @@ def prepare_kpis(df: DataFrame) -> DataFrame:
     )
 
 
-# 3. GENERIC RANKING FUNCTION
-
 def rank_movies(
     df: DataFrame,
     metric_col: str,
@@ -42,65 +70,35 @@ def rank_movies(
     filter_expr=None
 ) -> DataFrame:
     df = prepare_kpis(df)
-
     if filter_expr is not None:
         df = df.filter(filter_expr)
-
     ordering = desc(metric_col) if order == "desc" else asc(metric_col)
     return df.orderBy(ordering).limit(top_n)
 
 
-# 4. KPI DEFINITIONS (BEST / WORST MOVIES)
-
 def run_movie_kpis(df: DataFrame, gold_path: str):
-
     kpis = {
-        "highest_revenue": rank_movies(
-            df, "revenue_musd", "desc", 5
-        ),
-        "highest_budget": rank_movies(
-            df, "budget_musd", "desc", 5
-        ),
-        "highest_profit": rank_movies(
-            df, "profit_musd", "desc", 5
-        ),
-        "lowest_profit": rank_movies(
-            df, "profit_musd", "asc", 5
-        ),
-        "highest_roi": rank_movies(
-            df, "roi", "desc", 5, col("budget_musd") >= 10
-        ),
-        "lowest_roi": rank_movies(
-            df, "roi", "asc", 5, col("budget_musd") >= 10
-        ),
-        "most_voted": rank_movies(
-            df, "vote_count", "desc", 5
-        ),
-        "highest_rated": rank_movies(
-            df, "vote_average", "desc", 5, col("vote_count") >= 10
-        ),
-        "lowest_rated": rank_movies(
-            df, "vote_average", "asc", 5, col("vote_count") >= 10
-        ),
-        "most_popular": rank_movies(
-            df, "popularity", "desc", 5
-        )
+        "highest_revenue": rank_movies(df, "revenue_musd", "desc", 5),
+        "highest_budget":  rank_movies(df, "budget_musd",  "desc", 5),
+        "highest_profit":  rank_movies(df, "profit_musd",  "desc", 5),
+        "lowest_profit":   rank_movies(df, "profit_musd",  "asc",  5),
+        "highest_roi":     rank_movies(df, "roi", "desc", 5, col("budget_musd") >= 10),
+        "lowest_roi":      rank_movies(df, "roi", "asc",  5, col("budget_musd") >= 10),
+        "most_voted":      rank_movies(df, "vote_count",   "desc", 5),
+        "highest_rated":   rank_movies(df, "vote_average", "desc", 5, col("vote_count") >= 10),
+        "lowest_rated":    rank_movies(df, "vote_average", "asc",  5, col("vote_count") >= 10),
+        "most_popular":    rank_movies(df, "popularity",   "desc", 5),
     }
 
     for name, result_df in kpis.items():
-        output_path = f"{gold_path}/{name}"
+        output_path = os.path.join(gold_path, name)
         result_df.write.mode("overwrite").parquet(output_path)
         logger.info(f"KPI written: {output_path}")
 
 
-
-# 5. ADVANCED SEARCH QUERIES
-
 def run_search_queries(df: DataFrame, gold_path: str):
     df = prepare_kpis(df)
 
-    # Search 1:
-    # Best-rated Science Fiction Action movies starring Bruce Willis
     search_1 = (
         df.filter(
             (col("genres").contains("Science Fiction")) &
@@ -110,11 +108,8 @@ def run_search_queries(df: DataFrame, gold_path: str):
         )
         .orderBy(desc("vote_average"))
     )
+    search_1.write.mode("overwrite").parquet(os.path.join(gold_path, "search_bruce_willis"))
 
-    search_1.write.mode("overwrite").parquet(f"{gold_path}/search_bruce_willis")
-
-    # Search 2:
-    # Movies starring Uma Thurman, directed by Quentin Tarantino
     search_2 = (
         df.filter(
             (col("cast").contains("Uma Thurman")) &
@@ -122,22 +117,17 @@ def run_search_queries(df: DataFrame, gold_path: str):
         )
         .orderBy(asc("runtime"))
     )
-
-    search_2.write.mode("overwrite").parquet(f"{gold_path}/search_tarantino_uma")
+    search_2.write.mode("overwrite").parquet(os.path.join(gold_path, "search_tarantino_uma"))
 
     logger.info("Advanced search queries completed")
 
-
-
-# 6. FRANCHISE VS STANDALONE ANALYSIS
 
 def franchise_vs_standalone(df: DataFrame, gold_path: str):
     df = prepare_kpis(df)
 
     df = df.withColumn(
         "is_franchise",
-        when(col("belongs_to_collection").isNotNull(), "Franchise")
-        .otherwise("Standalone")
+        when(col("belongs_to_collection").isNotNull(), "Franchise").otherwise("Standalone")
     )
 
     stats = df.groupBy("is_franchise").agg(
@@ -148,12 +138,9 @@ def franchise_vs_standalone(df: DataFrame, gold_path: str):
         round(expr("avg(vote_average)"), 2).alias("mean_rating")
     )
 
-    stats.write.mode("overwrite").parquet(f"{gold_path}/franchise_vs_standalone")
+    stats.write.mode("overwrite").parquet(os.path.join(gold_path, "franchise_vs_standalone"))
     logger.info("Franchise vs Standalone analysis written")
 
-
-
-# 7. MOST SUCCESSFUL FRANCHISES
 
 def top_franchises(df: DataFrame, gold_path: str):
     df = prepare_kpis(df)
@@ -172,12 +159,9 @@ def top_franchises(df: DataFrame, gold_path: str):
         .orderBy(desc("total_revenue"))
     )
 
-    stats.write.mode("overwrite").parquet(f"{gold_path}/top_franchises")
+    stats.write.mode("overwrite").parquet(os.path.join(gold_path, "top_franchises"))
     logger.info("Top franchises written")
 
-
-
-# 8. MOST SUCCESSFUL DIRECTORS
 
 def top_directors(df: DataFrame, gold_path: str):
     df = prepare_kpis(df)
@@ -192,26 +176,41 @@ def top_directors(df: DataFrame, gold_path: str):
         .orderBy(desc("total_revenue"))
     )
 
-    stats.write.mode("overwrite").parquet(f"{gold_path}/top_directors")
+    stats.write.mode("overwrite").parquet(os.path.join(gold_path, "top_directors"))
     logger.info("Top directors written")
 
 
-
-# 9. ENTRY POINT
-
 if __name__ == "__main__":
     spark = SparkSession.builder.appName("MovieKPIJob").getOrCreate()
-
     logger.info("Starting KPI Job")
 
-    movies_df = spark.read.parquet(SILVER_PATH)
-    logger.info(f"Loaded SILVER dataset: {movies_df.count()} rows")
+    dates = find_unprocessed_silver_dates(SILVER_PATH)
+    if not dates:
+        logger.info("No unprocessed silver partitions found. Nothing to do.")
+        spark.stop()
+        exit(0)
 
-    run_movie_kpis(movies_df, GOLD_PATH)
-    run_search_queries(movies_df, GOLD_PATH)
-    franchise_vs_standalone(movies_df, GOLD_PATH)
-    top_franchises(movies_df, GOLD_PATH)
-    top_directors(movies_df, GOLD_PATH)
+    logger.info(f"Found {len(dates)} unprocessed silver partition(s).")
+
+    for date in dates:
+        logger.info(f"Running KPIs for ingestion_date={date}")
+        try:
+            silver_partition = os.path.join(SILVER_PATH, f"ingestion_date={date}")
+            gold_partition = os.path.join(GOLD_PATH, f"ingestion_date={date}")
+
+            movies_df = spark.read.parquet(silver_partition)
+            logger.info(f"Loaded {movies_df.count()} rows for ingestion_date={date}")
+
+            run_movie_kpis(movies_df, gold_partition)
+            run_search_queries(movies_df, gold_partition)
+            franchise_vs_standalone(movies_df, gold_partition)
+            top_franchises(movies_df, gold_partition)
+            top_directors(movies_df, gold_partition)
+
+            mark_done(date)
+            logger.info(f"KPIs complete for ingestion_date={date}")
+        except Exception as e:
+            logger.error(f"KPI job failed for ingestion_date={date}: {e}")
 
     spark.stop()
     logger.info("KPI job completed successfully")
