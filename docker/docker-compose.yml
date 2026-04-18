@@ -23,7 +23,8 @@ services:
     image: movie-spark-pipeline
     container_name: spark-transform
     depends_on:
-      - ingest
+      ingest:
+        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:
@@ -42,7 +43,8 @@ services:
     image: movie-spark-pipeline
     container_name: spark-kpi
     depends_on:
-      - transform
+      transform:
+        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:
@@ -61,7 +63,8 @@ services:
     image: movie-spark-pipeline
     container_name: spark-visualization
     depends_on:
-      - kpi
+      kpi:
+        condition: service_completed_successfully
     env_file:
       - ../.env
     environment:
